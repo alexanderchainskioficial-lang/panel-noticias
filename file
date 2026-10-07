@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel de noticias</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&family=Newsreader:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#EEF2F5;--card:#fff;--ink:#0F1E2B;--muted:#546675;--line:#CBD5DD;--pol:#3E9BD6;--eco:#D9930B;--mun:#2A9484;--bar:#0F1E2B;--barink:#EAF1F6}
+@media (prefers-color-scheme:dark){:root{--paper:#0E1720;--card:#16232F;--ink:#E7EEF4;--muted:#9FB0BE;--line:#26384A;--pol:#5DB3EA;--eco:#F0AE2E;--mun:#45B7A6;--bar:#070D13}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:17px/1.45 "Newsreader",Georgia,serif}
+h1,h2,.sans,button{font-family:"Bricolage Grotesque",Arial,sans-serif}
+.top{position:sticky;top:0;z-index:9;background:var(--bar);color:var(--barink);padding:8px 14px;font-family:"Bricolage Grotesque",Arial,sans-serif}
+.row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+#hora{font-size:25px;font-weight:800;font-variant-numeric:tabular-nums}
+.tick{display:flex;gap:14px;overflow-x:auto;margin-top:5px;font-size:14px;white-space:nowrap}
+.tick small{opacity:.7;font-size:12px;margin-right:4px}
+.estado{font-size:12px;opacity:.8;margin-top:3px;display:flex;justify-content:space-between;gap:8px;align-items:center}
+button{font-weight:700;font-size:13px;border:1.5px solid currentColor;background:transparent;color:inherit;border-radius:999px;padding:5px 12px;cursor:pointer}
+.wrap{max-width:760px;margin:0 auto;padding:0 14px 40px}
+h1{font-size:30px;margin:18px 0 4px;font-weight:800;letter-spacing:-.02em}
+h2{font-size:22px;margin:26px 0 8px}
+.chips{display:flex;gap:6px;overflow-x:auto;margin:10px 0}
+.chips button{color:var(--ink);background:var(--card);border-color:var(--line);white-space:nowrap}
+.chips button[aria-pressed=true]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+ul{list-style:none;margin:0;padding:0;background:var(--card);border:1px solid var(--line);border-radius:10px}
+li{border-bottom:1px solid var(--line)}li:last-child{border:0}
+li a{display:block;padding:11px 13px;color:inherit;text-decoration:none;border-left:6px solid var(--c);line-height:1.3}
+li a:hover{background:rgba(120,160,200,.1)}
+li small{display:block;color:var(--muted);font:500 13px "Bricolage Grotesque",Arial,sans-serif;margin-top:3px}
+.pol{--c:var(--pol)}.eco{--c:var(--eco)}.mun{--c:var(--mun)}
+.vacio{padding:16px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="row"><b id="hora">--:--:--</b><span id="fecha" style="font-size:13px;opacity:.8"></span></div>
+  <div class="tick" id="tick"></div>
+  <div class="estado"><span id="estado">Cargando…</span><button id="btn" type="button">Actualizar ahora</button></div>
+</div>
+<div class="wrap">
+  <h1>Panel de noticias</h1>
+  <div class="chips" id="chips"></div>
+  <div id="flashBox"><h2>Flash</h2><ul id="flash"></ul></div>
+  <div id="secciones"></div>
+</div>
+
+<script>
+var Z = "America/Argentina/Buenos_Aires";
+var CADA = 30 * 60 * 1000;                     // cada cuánto se refresca sola la página
+var TEMAS = {politica:["Política","pol"], economia:["Economía","eco"], mundo:["Mundo","mun"]};
+var $ = function(s){ return document.querySelector(s); };
+var filtro = "todo", items = [], actualizadoEn = null, proximo = Date.now() + CADA;
+
+function el(tag, cls, txt){ var e = document.createElement(tag); if(cls) e.className = cls; if(txt) e.textContent = txt; return e; }
+function hace(iso){
+  if(!iso) return "";
+  var m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  return m < 60 ? "hace " + m + " min" : m < 1440 ? "hace " + Math.floor(m/60) + " h" : "hace " + Math.floor(m/1440) + " d";
+}
+function pedir(url){ return fetch(url, {cache:"no-store"}).then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); }); }
+function pesos(n){ return n == null ? "–" : "$" + Math.round(n).toLocaleString("es-AR"); }
+
+function pintarMercado(m){
+  var t = $("#tick"); t.textContent = "";
+  [["Oficial","oficial"],["Blue","blue"],["MEP","bolsa"],["CCL","contadoconliqui"]].forEach(function(p){
+    var d = el("div"); d.append(el("small","",p[0]), el("b","", m[p[1]] ? pesos(m[p[1]].venta) : "–")); t.append(d);
+  });
+  var r = el("div"); r.append(el("small","","Riesgo país"), el("b","", m.riesgo && m.riesgo.valor != null ? String(m.riesgo.valor) : "–")); t.append(r);
+}
+
+function pintarNoticias(){
+  var orden = items.slice().sort(function(a,b){ return (b.fecha||"").localeCompare(a.fecha||""); });
+  var chips = $("#chips"); chips.textContent = "";
+  [["todo","Todo"]].concat(Object.keys(TEMAS).map(function(k){ return [k, TEMAS[k][0]]; })).forEach(function(c){
+    var b = el("button","",c[1]); b.type = "button"; b.setAttribute("aria-pressed", filtro === c[0]);
+    b.onclick = function(){ filtro = c[0]; pintarNoticias(); }; chips.append(b);
+  });
+  var fl = $("#flash"); fl.textContent = "";
+  var base = orden.filter(function(n){ return filtro === "todo" || n.tema === filtro; });
+  base.slice(0, 25).forEach(function(n){ fl.append(fila(n, true)); });
+  if(!base.length) fl.append(el("li","vacio","Todavía no hay noticias cargadas. Corré el workflow desde la pestaña Actions."));
+  var s = $("#secciones"); s.textContent = "";
+  Object.keys(TEMAS).forEach(function(k){
+    if(filtro !== "todo" && filtro !== k) return;
+    var lista = orden.filter(function(n){ return n.tema === k; });
+    if(!lista.length) return;
+    s.append(el("h2","",TEMAS[k][0]));
+    var ul = el("ul"); lista.forEach(function(n){ ul.append(fila(n, false)); }); s.append(ul);
+  });
+}
+function fila(n, conTema){
+  var li = el("li"), a = el("a", TEMAS[n.tema] ? TEMAS[n.tema][1] : "");
+  a.href = n.link; a.target = "_blank"; a.rel = "noopener noreferrer";
+  a.append(document.createTextNode(n.titulo));
+  a.append(el("small","", (conTema && TEMAS[n.tema] ? TEMAS[n.tema][0] + " · " : "") + n.fuente + " · " + hace(n.fecha)));
+  li.append(a); return li;
+}
+
+function actualizar(){
+  $("#estado").textContent = "Actualizando…";
+  // 1) noticias y valores guardados por la tarea automática
+  return pedir("news.json?t=" + Date.now()).catch(function(){ return {items:[], mercado:{}}; }).then(function(d){
+    items = d.items || []; actualizadoEn = d.actualizado; pintarNoticias();
+    // 2) cotizaciones en vivo directo desde el navegador (si fallan, usa las guardadas)
+    var m = {};
+    return Promise.all([
+      pedir("https://dolarapi.com/v1/dolares").then(function(l){ l.forEach(function(x){ m[x.casa] = x; }); }).catch(function(){}),
+      pedir("https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais/ultimo").then(function(x){ m.riesgo = x; }).catch(function(){})
+    ]).then(function(){
+      var gd = d.mercado || {}; Object.keys(gd).forEach(function(k){ if(!m[k]) m[k] = gd[k]; });
+      pintarMercado(m);
+    });
+  }).then(function(){ proximo = Date.now() + CADA; tic(); });
+}
+
+function tic(){
+  var ahora = new Date();
+  $("#hora").textContent = ahora.toLocaleTimeString("es-AR", {timeZone:Z, hour12:false});
+  $("#fecha").textContent = ahora.toLocaleDateString("es-AR", {timeZone:Z, weekday:"long", day:"numeric", month:"long"});
+  var faltan = Math.max(0, Math.ceil((proximo - Date.now()) / 60000));
+  $("#estado").textContent = (actualizadoEn ? "Noticias " + hace(actualizadoEn) : "Sin noticias aún") + " · próximo refresco en " + faltan + " min";
+}
+
+$("#btn").onclick = actualizar;
+document.addEventListener("visibilitychange", function(){ if(!document.hidden && Date.now() > proximo) actualizar(); });
+setInterval(actualizar, CADA);
+setInterval(tic, 1000);
+actualizar();
+</script>
+</body>
+</html>
+#!/usr/bin/env python3
+"""Baja noticias (RSS) y cotizaciones y las guarda en news.json.
+Solo usa la librería estándar de Python: no hay nada que instalar."""
+import json
+import os
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+
+SALIDA = os.path.join(os.path.dirname(__file__), "..", "news.json")
+POR_TEMA = 15  # cuántas noticias guarda por tema
+
+
+def gnews(consulta):
+    """Google Noticias en formato RSS, filtrado a la última jornada."""
+    q = urllib.parse.urlencode({
+        "q": consulta + " when:1d", "hl": "es-419", "gl": "AR", "ceid": "AR:es-419",
+    })
+    return "https://news.google.com/rss/search?" + q
+
+
+# (tema, url). Para sumar o cambiar fuentes, editá solo esta lista.
+FEEDS = [
+    ("politica", gnews("política argentina Congreso Gobierno")),
+    ("politica", gnews("Milei oposición Diputados Senado")),
+    ("economia", gnews("economía argentina inflación BCRA")),
+    ("economia", gnews("dólar riesgo país mercados Argentina")),
+    ("mundo", gnews("geopolítica mundo")),
+    ("mundo", gnews("Estados Unidos China Rusia Medio Oriente")),
+    ("mundo", "https://feeds.bbci.co.uk/mundo/rss.xml"),
+]
+
+
+def get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (panel-noticias)"})
+    with urllib.request.urlopen(req, timeout=25) as r:
+        return r.read()
+
+
+def leer(tema, url, datos=None):
+    """Devuelve la lista de noticias de un RSS. `datos` sirve para pruebas."""
+    root = ET.fromstring(datos if datos is not None else get(url))
+    salida = []
+    for it in root.iter("item"):
+        titulo = (it.findtext("title") or "").strip()
+        link = (it.findtext("link") or "").strip()
+        src = it.find("source")
+        fuente = src.text.strip() if src is not None and src.text else ""
+        if fuente and titulo.endswith(" - " + fuente):
+            titulo = titulo[: -len(fuente) - 3]
+        if not fuente:
+            fuente = "BBC Mundo" if "bbci" in url else urllib.parse.urlparse(url).netloc
+        try:
+            fecha = parsedate_to_datetime(it.findtext("pubDate")).astimezone(timezone.utc).isoformat()
+        except Exception:
+            fecha = ""
+        if titulo and link:
+            salida.append({"tema": tema, "titulo": titulo, "fuente": fuente, "link": link, "fecha": fecha})
+    return salida
+
+
+def mercado():
+    m = {}
+    try:
+        for d in json.loads(get("https://dolarapi.com/v1/dolares")):
+            m[d["casa"]] = {"compra": d.get("compra"), "venta": d.get("venta")}
+    except Exception as e:
+        print("Dólar falló:", e)
+    try:
+        m["riesgo"] = json.loads(get("https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais/ultimo"))
+    except Exception as e:
+        print("Riesgo país falló:", e)
+    return m
+
+
+def main():
+    todas = []
+    for tema, url in FEEDS:
+        try:
+            nuevas = leer(tema, url)
+            print(f"OK  {tema}: {len(nuevas)} notas")
+            todas += nuevas
+        except Exception as e:  # una fuente caída no frena a las demás
+            print(f"FALLÓ {tema} {url[:60]}...: {e}")
+
+    if not todas and os.path.exists(SALIDA):
+        print("No llegó ninguna noticia: dejo el archivo anterior.")
+        return
+
+    vistos, unicas = set(), []
+    for n in sorted(todas, key=lambda x: x["fecha"], reverse=True):
+        clave = n["titulo"].lower()
+        if clave not in vistos:
+            vistos.add(clave)
+            unicas.append(n)
+
+    items, cuenta = [], {}
+    for n in unicas:
+        cuenta[n["tema"]] = cuenta.get(n["tema"], 0) + 1
+        if cuenta[n["tema"]] <= POR_TEMA:
+            items.append(n)
+
+    with open(SALIDA, "w", encoding="utf-8") as f:
+        json.dump({
+            "actualizado": datetime.now(timezone.utc).isoformat(),
+            "mercado": mercado(),
+            "items": items,
+        }, f, ensure_ascii=False, indent=1)
+    print("Guardado news.json con", len(items), "noticias")
+
+
+if __name__ == "__main__":
+    main()
+#!/usr/bin/env python3
+"""Baja noticias (RSS) y cotizaciones y las guarda en news.json.
+Solo usa la librería estándar de Python: no hay nada que instalar."""
+import json
+import os
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+
+SALIDA = os.path.join(os.path.dirname(__file__), "..", "news.json")
+POR_TEMA = 15  # cuántas noticias guarda por tema
+
+
+def gnews(consulta):
+    """Google Noticias en formato RSS, filtrado a la última jornada."""
+    q = urllib.parse.urlencode({
+        "q": consulta + " when:1d", "hl": "es-419", "gl": "AR", "ceid": "AR:es-419",
+    })
+    return "https://news.google.com/rss/search?" + q
+
+
+# (tema, url). Para sumar o cambiar fuentes, editá solo esta lista.
+FEEDS = [
+    ("politica", gnews("política argentina Congreso Gobierno")),
+    ("politica", gnews("Milei oposición Diputados Senado")),
+    ("economia", gnews("economía argentina inflación BCRA")),
+    ("economia", gnews("dólar riesgo país mercados Argentina")),
+    ("mundo", gnews("geopolítica mundo")),
+    ("mundo", gnews("Estados Unidos China Rusia Medio Oriente")),
+    ("mundo", "https://feeds.bbci.co.uk/mundo/rss.xml"),
+]
+
+
+def get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (panel-noticias)"})
+    with urllib.request.urlopen(req, timeout=25) as r:
+        return r.read()
+
+
+def leer(tema, url, datos=None):
+    """Devuelve la lista de noticias de un RSS. `datos` sirve para pruebas."""
+    root = ET.fromstring(datos if datos is not None else get(url))
+    salida = []
+    for it in root.iter("item"):
+        titulo = (it.findtext("title") or "").strip()
+        link = (it.findtext("link") or "").strip()
+        src = it.find("source")
+        fuente = src.text.strip() if src is not None and src.text else ""
+        if fuente and titulo.endswith(" - " + fuente):
+            titulo = titulo[: -len(fuente) - 3]
+        if not fuente:
+            fuente = "BBC Mundo" if "bbci" in url else urllib.parse.urlparse(url).netloc
+        try:
+            fecha = parsedate_to_datetime(it.findtext("pubDate")).astimezone(timezone.utc).isoformat()
+        except Exception:
+            fecha = ""
+        if titulo and link:
+            salida.append({"tema": tema, "titulo": titulo, "fuente": fuente, "link": link, "fecha": fecha})
+    return salida
+
+
+def mercado():
+    m = {}
+    try:
+        for d in json.loads(get("https://dolarapi.com/v1/dolares")):
+            m[d["casa"]] = {"compra": d.get("compra"), "venta": d.get("venta")}
+    except Exception as e:
+        print("Dólar falló:", e)
+    try:
+        m["riesgo"] = json.loads(get("https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais/ultimo"))
+    except Exception as e:
+        print("Riesgo país falló:", e)
+    return m
+
+
+def main():
+    todas = []
+    for tema, url in FEEDS:
+        try:
+            nuevas = leer(tema, url)
+            print(f"OK  {tema}: {len(nuevas)} notas")
+            todas += nuevas
+        except Exception as e:  # una fuente caída no frena a las demás
+            print(f"FALLÓ {tema} {url[:60]}...: {e}")
+
+    if not todas and os.path.exists(SALIDA):
+        print("No llegó ninguna noticia: dejo el archivo anterior.")
+        return
+
+    vistos, unicas = set(), []
+    for n in sorted(todas, key=lambda x: x["fecha"], reverse=True):
+        clave = n["titulo"].lower()
+        if clave not in vistos:
+            vistos.add(clave)
+            unicas.append(n)
+
+    items, cuenta = [], {}
+    for n in unicas:
+        cuenta[n["tema"]] = cuenta.get(n["tema"], 0) + 1
+        if cuenta[n["tema"]] <= POR_TEMA:
+            items.append(n)
+
+    with open(SALIDA, "w", encoding="utf-8") as f:
+        json.dump({
+            "actualizado": datetime.now(timezone.utc).isoformat(),
+            "mercado": mercado(),
+            "items": items,
+        }, f, ensure_ascii=False, indent=1)
+    print("Guardado news.json con", len(items), "noticias")
+
+
+if __name__ == "__main__":
+    main()
+name: Actualizar noticias
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # cada 30 minutos
+  workflow_dispatch:          # permite correrlo a mano desde la pestaña Actions
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Bajar noticias y cotizaciones
+        run: python scripts/update_news.py
+      - name: Guardar cambios
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+          git add news.json
+          git diff --cached --quiet || (git commit -m "Actualizar noticias" && git push)
+{"actualizado": null, "mercado": {}, "items": []}
